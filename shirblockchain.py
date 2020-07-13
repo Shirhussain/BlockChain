@@ -3,6 +3,9 @@ import hashlib
 import sys
 from time import time
 from uuid import uuid4
+from urllib.parse import urlparse
+
+import requests
 from flask import Flask, jsonify, request
 
 class BlockChain():
@@ -12,6 +15,10 @@ class BlockChain():
     """
     def __init__(self):
         self.chain = []
+        # by node we can do the consensus in block chain, evey node introduce it self to others 
+        # i can use [] in to define node and write inside it but i have to check the node is note repeated
+        # that's why i use "set()"
+        self.nodes = set()
         self.current_transactions = []
         # here for new block i use (1) andn for the first one proof is not matter so i use randomly for example 100
         self.new_block(prvious_hash=1, proof=100)
@@ -68,6 +75,54 @@ class BlockChain():
         """
         block_string = json.dumps(block, sort_keys=True).encode()
         return hashlib.sha256(block_string).hexdigest()
+
+
+    def register_node(self, address):
+        # this one spread the url
+        # we need just the important one which is netlocation
+        parsed_url = urlparse(address)
+        self.nodes.add(parsed_url.netloc)
+
+    def valid_chain(self, chain):
+        """ check if the chain is valid """
+        last_block = chain[0]
+        current_index = 1
+        while current_index < len(chain):
+            block = chian[current_index]
+            if block['previous_hash'] != self.hash(last_block):
+                return False
+            if not self.valid_proof(last_block['proof'], block['proof']):
+                return False
+                
+            last_block = block
+            current_index += 1
+        
+        return True
+
+    def resolve_conflicts(self):
+        """ checks all the nodes and selects the best one which has the longest chain """
+        # take nodes from all of my neighbours
+        neighbours = self.nodes
+        new_chain = None
+        
+        # only i'm looking for chain longer than my chain
+        max_length = len(self.chain)
+        for node in neighbours:
+            response = requests.get(f'http://{node}/chain')
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+                
+                # we should check if the chian is longer and chain is valid
+                if length > max_length and self.valid_chain(chain):
+                    max_length = length
+                    new_chain = chain
+
+        # replace our chain if we discovered a new valid chain logner than ours
+        if new_chain:
+            self.chain = new_chain
+            return True
+        return False
 
     @property
     def last_block(self):
@@ -149,6 +204,36 @@ def full_chain():
     }
     return jsonify(response), 200
 
+
+@app.route("/nodes/register", methods = ["POST"])
+def register_node():
+    values = request.get_json()
+
+    nodes = values.get("nodes")
+    for node in nodes:
+        blockchain.register_node(node)
+    response = {
+        "message": "nodes added",
+        "total_nodes":list(blockchain.nodes),
+    }
+    return jsonify(response), 201 # created
+
+@app.route("/nodes/resolve")
+def consensus():
+    """ wen we cal consensus it will connect to every node that it knows and take the chain
+    if chain is valid and longer than it self then replace with yourself """
+    replaced = blockchain.resolve_conflicts()
+    if replaced:
+        response = {
+            "message": "replaced ",
+            "new_chain": blockchain.chain,
+        }
+    else:
+        response = {
+            "message": "I am the best block ",
+            "chain": blockchain.chain,
+        }
+    return jsonify(response), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=sys.argv[1])
